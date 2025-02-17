@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Multiplayer Slither.io Clone</title>
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <style>
+        canvas {
+            border: none;
+            background: #1a1a2e;
+            border-radius: 12px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.3);
+            display: none; /* Hidden initially */
+        }
+        body {
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
+            font-family: 'Arial', sans-serif;
+            color: white;
+        }
+        #loginForm {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.3);
+            text-align: center;
+        }
+        input, button {
+            display: block;
+            width: 100%;
+            margin: 10px 0;
+            padding: 10px;
+            border: none;
+            border-radius: 5px;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            font-size: 16px;
+        }
+        input[type="color"] {
+            height: 40px;
+            background: white;
+        }
+        button {
+            background: #42dcdb;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #3bc7c6;
+        }
+        #gameTitle {
+            color: #fff;
+            font-size: 2.5em;
+            margin-bottom: 20px;
+            text-shadow: 0 0 10px rgba(66, 220, 219, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <h1 id="gameTitle">MULTIPLAYER SLITHER</h1>
+    
+    <div id="loginForm">
+        <input type="text" id="username" placeholder="Enter username">
+        <input type="color" id="snakeColor" value="#42dcdb">
+        <button onclick="handleLogin()">Start Game</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        // Initialize Supabase client - Fix initialization
+        const { createClient } = supabase;
+        const supabaseUrl = 'https://hqvnldcrezqxeynxyyvi.supabase.co';
+        const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhxdm5sZGNyZXpxeGV5bnh5eXZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Mzk3NTIyMTIsImV4cCI6MjA1NTMyODIxMn0.95l1GnSczJ4EH_pLlrWub-r47cxzg0J9B-IfbyMs_FQ';
+        const supabaseClient = createClient(supabaseUrl, supabaseKey);
+
+        // Game state
+        let currentPlayer = null;
+        let players = new Map();
+        let gameStarted = false;
+        let mouseX = 0;
+        let mouseY = 0;
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Set canvas size
+        canvas.width = 800;
+        canvas.height = 600;
+
+        // Mouse move event listener
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouseX = e.clientX - rect.left;
+            mouseY = e.clientY - rect.top;
+        });
+
+        // Snake class
+        class Snake {
+            constructor(x, y, color) {
+                this.segments = [{x, y}];
+                this.size = 10;
+                this.speed = 3;
+                this.angle = 0;
+                this.score = 0;
+                this.color = color;
+                this.glowStrength = 10;
+                this.maxTurnSpeed = 0.15; // Maximum angle change per frame (in radians)
+                this.dead = false;
+            }
+
+            checkCollision() {
+                const head = this.segments[0];
+                
+                // Check self collision
+                for (let i = 4; i < this.segments.length; i++) {
+                    const segment = this.segments[i];
+                    const distance = Math.hypot(head.x - segment.x, head.y - segment.y);
+                    if (distance < 8) {
+                        this.dead = true;
+                        return true;
+                    }
+                }
+
+                // Check collision with other players
+                players.forEach((player) => {
+                    if (player.snake !== this) {
+                        player.snake.segments.forEach((segment) => {
+                            const distance = Math.hypot(head.x - segment.x, head.y - segment.y);
+                            if (distance < 8) {
+                                this.dead = true;
+                                return true;
+                            }
+                        });
+                    }
+                });
+
+                return false;
+            }
+
+            update(mouseX, mouseY) {
+                if (this.dead) return;
+                
+                // Calculate angle to mouse
+                const head = this.segments[0];
+                const targetAngle = Math.atan2(mouseY - head.y, mouseX - head.x);
+                
+                // Calculate the difference between current and target angle
+                let angleDiff = targetAngle - this.angle;
+                
+                // Normalize angle difference to [-PI, PI]
+                while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+                while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+                
+                // Limit the turn speed
+                if (angleDiff > this.maxTurnSpeed) {
+                    this.angle += this.maxTurnSpeed;
+                } else if (angleDiff < -this.maxTurnSpeed) {
+                    this.angle -= this.maxTurnSpeed;
+                } else {
+                    this.angle = targetAngle;
+                }
+
+                // Move head
+                const newHead = {
+                    x: head.x + Math.cos(this.angle) * this.speed,
+                    y: head.y + Math.sin(this.angle) * this.speed
+                };
+
+                // Add new head and check for collision
+                this.segments.unshift(newHead);
+                while (this.segments.length > this.size) {
+                    this.segments.pop();
+                }
+
+                // Check for collision with self
+                this.checkCollision();
+
+                // Wrap around screen
+                if (newHead.x < 0) newHead.x = canvas.width;
+                if (newHead.x > canvas.width) newHead.x = 0;
+                if (newHead.y < 0) newHead.y = canvas.height;
+                if (newHead.y > canvas.height) newHead.y = 0;
+            }
+
+            draw() {
+                ctx.shadowBlur = this.glowStrength;
+                ctx.shadowColor = this.color;
+                
+                // Draw snake body
+                ctx.beginPath();
+                this.segments.forEach((segment, index) => {
+                    ctx.lineTo(segment.x, segment.y);
+                });
+                ctx.strokeStyle = this.dead ? '#ff4444' : this.color; // Red when dead
+                ctx.lineWidth = 12;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.stroke();
+
+                // Only draw eyes if snake is alive
+                if (!this.dead) {
+                    // Draw eyes
+                    const head = this.segments[0];
+                    ctx.fillStyle = '#fff';
+                    ctx.beginPath();
+                    ctx.arc(
+                        head.x + Math.cos(this.angle + 0.3) * 5,
+                        head.y + Math.sin(this.angle + 0.3) * 5,
+                        2.5, 0, Math.PI * 2
+                    );
+                    ctx.arc(
+                        head.x + Math.cos(this.angle - 0.3) * 5,
+                        head.y + Math.sin(this.angle - 0.3) * 5,
+                        2.5, 0, Math.PI * 2
+                    );
+                    ctx.fill();
+                }
+                
+                ctx.shadowBlur = 0;
+            }
+
+            eat(food) {
+                const head = this.segments[0];
+                const distance = Math.hypot(food.x - head.x, food.y - head.y);
+                if (distance < 10) {
+                    this.size += 5;
+                    this.score += 10;
+                    return true;
+                }
+                return false;
+            }
+        }
+
+        // Food class
+        class Food {
+            constructor() {
+                this.respawn();
+                this.color = '#ff6b6b'; // Modern coral color
+                this.glowStrength = 10;
+            }
+
+            respawn() {
+                this.x = Math.random() * canvas.width;
+                this.y = Math.random() * canvas.height;
+            }
+
+            draw() {
+                ctx.shadowBlur = this.glowStrength;
+                ctx.shadowColor = this.color;
+                
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 6, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                
+                // Reset shadow
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        // Initialize foods array after Food class is defined
+        let foods = Array(50).fill().map(() => new Food());
+
+        // Login handler
+        window.handleLogin = async function() {
+            const username = document.getElementById('username').value;
+            const color = document.getElementById('snakeColor').value;
+            
+            if (!username) {
+                alert('Please enter a username');
+                return;
+            }
+
+            // Create anonymous session
+            const { data, error } = await supabaseClient.auth.signUp({
+                email: `${username}@temp.com`,
+                password: 'temporary-password',
+            });
+
+            if (error) {
+                alert('Error logging in');
+                return;
+            }
+
+            // Initialize player
+            currentPlayer = {
+                id: data.user.id,
+                username,
+                color,
+                snake: new Snake(canvas.width / 2, canvas.height / 2, color)
+            };
+
+            // Subscribe to realtime updates
+            subscribeToGame();
+
+            // Hide login, show game
+            document.getElementById('loginForm').style.display = 'none';
+            document.getElementById('gameCanvas').style.display = 'block';
+            
+            // Start game
+            startGame();
+        }
+
+        function subscribeToGame() {
+            // Subscribe to player positions channel
+            const channel = supabaseClient
+                .channel('game_state')
+                .on('broadcast', { event: 'position' }, ({ payload }) => {
+                    if (payload.playerId !== currentPlayer.id) {
+                        updateOtherPlayer(payload);
+                    }
+                })
+                .on('broadcast', { event: 'food_update' }, ({ payload }) => {
+                    if (payload.index < foods.length) {
+                        foods[payload.index].x = payload.x;
+                        foods[payload.index].y = payload.y;
+                    }
+                })
+                .on('broadcast', { event: 'player_reset' }, ({ payload }) => {
+                    if (players.has(payload.playerId)) {
+                        const player = players.get(payload.playerId);
+                        player.snake.dead = false;
+                    }
+                })
+                .subscribe();
+
+            // Send position updates
+            setInterval(() => {
+                if (currentPlayer && currentPlayer.snake) {
+                    channel.send({
+                        type: 'broadcast',
+                        event: 'position',
+                        payload: {
+                            playerId: currentPlayer.id,
+                            username: currentPlayer.username,
+                            color: currentPlayer.color,
+                            segments: currentPlayer.snake.segments,
+                            score: currentPlayer.snake.score,
+                            angle: currentPlayer.snake.angle
+                        }
+                    });
+                }
+            }, 50); // Update every 50ms
+
+            // Handle player presence - Fixed subscription
+            const presence = supabaseClient
+                .channel('presence')
+                .on('presence', { event: 'sync' }, () => {
+                    const state = presence.presenceState();
+                    // Remove disconnected players
+                    players.forEach((_, id) => {
+                        if (!state[id]) {
+                            players.delete(id);
+                        }
+                    });
+                })
+                .on('presence', { event: 'join' }, ({ key, newPresence }) => {
+                    console.log('Player joined:', key);
+                })
+                .on('presence', { event: 'leave' }, ({ key }) => {
+                    players.delete(key);
+                });
+
+            // Subscribe to presence channel first
+            presence.subscribe(async (status) => {
+                if (status === 'SUBSCRIBED') {
+                    // Only track presence after successful subscription
+                    await presence.track({
+                        user_id: currentPlayer.id,
+                        online_at: new Date().toISOString(),
+                    });
+                }
+            });
+        }
+
+        function updateOtherPlayer(playerData) {
+            if (!players.has(playerData.playerId)) {
+                // Create new snake for player
+                const snake = new Snake(0, 0, playerData.color);
+                players.set(playerData.playerId, {
+                    username: playerData.username,
+                    snake: snake
+                });
+            }
+
+            // Update existing player's snake
+            const player = players.get(playerData.playerId);
+            player.snake.segments = playerData.segments;
+            player.snake.angle = playerData.angle;
+            player.snake.score = playerData.score;
+        }
+
+        // Modified game loop to handle multiple players
+        function gameLoop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawGrid();
+
+            // Update and draw current player
+            if (currentPlayer && currentPlayer.snake) {
+                currentPlayer.snake.update(mouseX, mouseY);
+                currentPlayer.snake.draw();
+
+                if (!currentPlayer.snake.dead) {
+                    foods.forEach((food, index) => {
+                        if (currentPlayer.snake.eat(food)) {
+                            food.respawn();
+                            // Broadcast new food position
+                            supabaseClient.channel('game_state').send({
+                                type: 'broadcast',
+                                event: 'food_update',
+                                payload: {
+                                    index,
+                                    x: food.x,
+                                    y: food.y
+                                }
+                            });
+                        }
+                        food.draw();
+                    });
+                }
+            }
+
+            // Draw other players
+            players.forEach((player, id) => {
+                if (id !== currentPlayer.id) {
+                    player.snake.draw();
+                }
+            });
+
+            // Draw scores
+            drawScoreboard();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        function drawScoreboard() {
+            let y = 40;
+            ctx.textAlign = 'left';
+            ctx.font = 'bold 16px Arial';
+            
+            // Current player score
+            if (currentPlayer) {
+                ctx.fillStyle = currentPlayer.color;
+                ctx.fillText(`${currentPlayer.username}: ${currentPlayer.snake.score}`, 20, y);
+                y += 25;
+            }
+
+            // Other players scores
+            players.forEach((player, id) => {
+                if (id !== currentPlayer?.id) {
+                    ctx.fillStyle = player.snake.color;
+                    ctx.fillText(`${player.username}: ${player.snake.score}`, 20, y);
+                    y += 25;
+                }
+            });
+        }
+
+        // Add subtle grid background
+        function drawGrid() {
+            ctx.strokeStyle = '#2a2a3e';
+            ctx.lineWidth = 0.5;
+            
+            // Vertical lines
+            for(let x = 0; x < canvas.width; x += 40) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+            }
+            
+            // Horizontal lines
+            for(let y = 0; y < canvas.height; y += 40) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+        }
+
+        // Add restart functionality
+        function resetGame() {
+            if (currentPlayer) {
+                currentPlayer.snake = new Snake(canvas.width / 2, canvas.height / 2, currentPlayer.color);
+                // Broadcast reset
+                supabaseClient.channel('game_state').send({
+                    type: 'broadcast',
+                    event: 'player_reset',
+                    payload: {
+                        playerId: currentPlayer.id
+                    }
+                });
+            }
+        }
+
+        // Add keyboard listener for restart
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' && currentPlayer?.snake?.dead) {
+                resetGame();
+            }
+        });
+
+        // Start game
+        function startGame() {
+            gameLoop();
+        }
+    </script>
+</body>
+</html> 
