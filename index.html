@@ -276,38 +276,38 @@
                 return;
             }
 
-            // Create anonymous session
-            const { data, error } = await supabaseClient.auth.signUp({
-                email: `${username}@temp.com`,
-                password: 'temporary-password',
-            });
+            try {
+                // Generate a unique ID instead of creating a new user
+                const playerId = crypto.randomUUID();
+                
+                // Initialize player without authentication
+                currentPlayer = {
+                    id: playerId,
+                    username,
+                    color,
+                    snake: new Snake(canvas.width / 2, canvas.height / 2, color)
+                };
 
-            if (error) {
-                alert('Error logging in');
-                return;
+                // Subscribe to realtime updates
+                subscribeToGame();
+
+                // Hide login, show game
+                document.getElementById('loginForm').style.display = 'none';
+                document.getElementById('gameCanvas').style.display = 'block';
+                
+                // Start game
+                startGame();
+                
+            } catch (error) {
+                console.error('Login error:', error);
+                alert('Unable to start game. Please try again.');
             }
-
-            // Initialize player
-            currentPlayer = {
-                id: data.user.id,
-                username,
-                color,
-                snake: new Snake(canvas.width / 2, canvas.height / 2, color)
-            };
-
-            // Subscribe to realtime updates
-            subscribeToGame();
-
-            // Hide login, show game
-            document.getElementById('loginForm').style.display = 'none';
-            document.getElementById('gameCanvas').style.display = 'block';
-            
-            // Start game
-            startGame();
         }
 
         function subscribeToGame() {
-            // Subscribe to player positions channel
+            let lastUpdate = Date.now();
+            const MIN_UPDATE_INTERVAL = 100;
+
             const channel = supabaseClient
                 .channel('game_state')
                 .on('broadcast', { event: 'position' }, ({ payload }) => {
@@ -315,65 +315,63 @@
                         updateOtherPlayer(payload);
                     }
                 })
-                .on('broadcast', { event: 'food_update' }, ({ payload }) => {
-                    if (payload.index < foods.length) {
-                        foods[payload.index].x = payload.x;
-                        foods[payload.index].y = payload.y;
-                    }
-                })
-                .on('broadcast', { event: 'player_reset' }, ({ payload }) => {
-                    if (players.has(payload.playerId)) {
-                        const player = players.get(payload.playerId);
-                        player.snake.dead = false;
-                    }
+                .on('error', (error) => {
+                    console.error('Channel error:', error);
+                    setTimeout(() => channel.subscribe(), 1000);
                 })
                 .subscribe();
 
-            // Send position updates
             setInterval(() => {
-                if (currentPlayer && currentPlayer.snake) {
-                    channel.send({
-                        type: 'broadcast',
-                        event: 'position',
-                        payload: {
-                            playerId: currentPlayer.id,
-                            username: currentPlayer.username,
-                            color: currentPlayer.color,
-                            segments: currentPlayer.snake.segments,
-                            score: currentPlayer.snake.score,
-                            angle: currentPlayer.snake.angle
-                        }
-                    });
+                if (currentPlayer?.snake && !currentPlayer.snake.dead) {
+                    const now = Date.now();
+                    if (now - lastUpdate >= MIN_UPDATE_INTERVAL) {
+                        channel.send({
+                            type: 'broadcast',
+                            event: 'position',
+                            payload: {
+                                playerId: currentPlayer.id,
+                                username: currentPlayer.username,
+                                color: currentPlayer.color,
+                                segments: currentPlayer.snake.segments,
+                                score: currentPlayer.snake.score,
+                                angle: currentPlayer.snake.angle
+                            }
+                        }).catch(error => {
+                            console.warn('Failed to send position update:', error);
+                        });
+                        lastUpdate = now;
+                    }
                 }
-            }, 50); // Update every 50ms
+            }, MIN_UPDATE_INTERVAL);
 
-            // Handle player presence - Fixed subscription
+            // Simplified presence handling
             const presence = supabaseClient
-                .channel('presence')
+                .channel(`presence-${currentPlayer.id}`)
                 .on('presence', { event: 'sync' }, () => {
                     const state = presence.presenceState();
-                    // Remove disconnected players
                     players.forEach((_, id) => {
                         if (!state[id]) {
                             players.delete(id);
                         }
                     });
                 })
-                .on('presence', { event: 'join' }, ({ key, newPresence }) => {
+                .on('presence', { event: 'join' }, ({ key }) => {
                     console.log('Player joined:', key);
                 })
                 .on('presence', { event: 'leave' }, ({ key }) => {
                     players.delete(key);
                 });
 
-            // Subscribe to presence channel first
             presence.subscribe(async (status) => {
                 if (status === 'SUBSCRIBED') {
-                    // Only track presence after successful subscription
-                    await presence.track({
-                        user_id: currentPlayer.id,
-                        online_at: new Date().toISOString(),
-                    });
+                    try {
+                        await presence.track({
+                            user_id: currentPlayer.id,
+                            online_at: new Date().toISOString(),
+                        });
+                    } catch (error) {
+                        console.error('Presence tracking error:', error);
+                    }
                 }
             });
         }
